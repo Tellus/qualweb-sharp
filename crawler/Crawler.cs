@@ -3,6 +3,7 @@ using Microsoft.Playwright;
 using System.Threading.Tasks;
 using System.Linq;
 using System.Collections.Generic;
+using System.Collections.Concurrent;
 
 namespace Qualweb {
   public record CrawlOptions {
@@ -11,7 +12,7 @@ namespace Qualweb {
     /// controls how many navigations a page can be from the source before the
     /// crawler stops.
     /// </summary>
-    public int? maxLinkDepth;
+    public int maxLinkDepth = int.MaxValue;
     /// <summary>
     /// How many path segments should be allowed? Assume a source URL 
     /// "https://somedomain.null/seg1" and a max path depth of 2. The source
@@ -19,17 +20,17 @@ namespace Qualweb {
     /// "https://somedomain.null/seg1/seg2" will be included by the URL
     /// "https://somedomain.null/seg1/seg2/seg3" will <b>not</b>.
     /// </summary>
-    public int? maxPathDepth;
+    public int maxPathDepth = int.MaxValue;
 
     /// <summary>
     /// Stop crawling after this many URLs have been found.
     /// </summary>
-    public int? maxUrls;
+    public int maxUrls = int.MaxValue;
 
     /// <summary>
     /// Optional timeout.
     /// </summary>
-    public int? timeout;
+    public int timeout = 10000;
 
     /// <summary>
     /// If set (and greater than 1), the crawler will attempt to run several
@@ -37,8 +38,7 @@ namespace Qualweb {
     /// sort of throttling, you may see performance degradation from using
     /// this option.
     /// </summary>
-    public int? maxParallelCrawls;
-    public bool logging = false;
+    public int maxParallelCrawls = 1;
 
     /// <summary>
     /// If set, will use this viewport for pages before trawling them.
@@ -61,6 +61,16 @@ namespace Qualweb {
     /// The item is awaiting processing by the crawler.
     /// </summary>
     Queued,
+
+    /// <summary>
+    /// The item has been picked up by a crawler and is about to be processed.
+    /// </summary>
+    Pending,
+
+    /// <summary>
+    /// The item is currently being processed by a crawler.
+    /// </summary>
+    Running,
 
     /// <summary>
     /// The crawler failed to process the item.
@@ -113,6 +123,20 @@ namespace Qualweb {
     QueueItem<string> Get(string url);
 
     void Add(string url);
+    void Add(string url, QueueState state);
+
+    /// <summary>
+    /// Checks whether the queue currently has any items awaiting processing.
+    /// </summary>
+    /// <returns>True if at least one item can be dequeued.</returns>
+    bool HasNext();
+
+    /// <summary>
+    /// Retrieves the next <see cref="QueueItem"/> that is queued up. Throws
+    /// an error if no queued items remain.
+    /// </summary>
+    /// <returns></returns>
+    QueueItem<string> GetNext();
   }
 
   /// <summary>
@@ -122,7 +146,18 @@ namespace Qualweb {
   /// implement your own ICrawlQueue.
   /// </summary>
   public class MemoryQueue : ICrawlQueue {
-    private Dictionary<string, QueueItem<string>> queue = new Dictionary<string, QueueItem<string>>();
+    readonly private ConcurrentDictionary<string, QueueItem<string>> queue;
+
+    /// <summary>
+    /// Creates a new MemoryQueue backed by a <seealso cref="ConcurrentDictionary"/>.
+    /// </summary>
+    /// <param name="parallelCount">Estimated number of threads that will operate on the queue.</param>
+    /// <param name="initialCapacity">Initial capacity of the underlying
+    /// ConcurrentDictionary. The dictionary will resize as needed, but higher
+    /// concurrencies make this operation more expensive.</param>
+    public MemoryQueue(int parallelCount = 1, int initialCapacity = 100) {
+      this.queue = new ConcurrentDictionary<string, QueueItem<string>>(parallelCount, initialCapacity);
+    }
 
     public bool Has(string url) {
       return this.queue.ContainsKey(url);
@@ -137,13 +172,29 @@ namespace Qualweb {
     }
 
     public void Add(string url) {
+      this.Add(url, QueueState.Queued);
+    }
+
+    public void Add(string url, QueueState state = QueueState.Queued) {
       if (this.Has(url)) {
         throw new Exception($"The URL ${url} is already present in the queue");
-      } else this.queue.Add(url, new QueueItem<string>() {
+      } else this.queue.TryAdd(url, new QueueItem<string>() {
         Data = url,
         State = QueueState.Queued,
         url = url,
       });
+    }
+
+    public bool HasNext() {
+      return this.queue.Any(item => item.Value.State == QueueState.Queued);
+    }
+
+    public QueueItem<string> GetNext() {
+      var nextItem = this.queue.First(item => item.Value.State == QueueState.Queued);
+
+      nextItem.Value.State = QueueState.Pending;
+
+      return nextItem.Value;
     }
   }
 
@@ -160,13 +211,13 @@ namespace Qualweb {
       get; init;
     }
 
-    
-
     /// <summary>
     /// Raised <b>after</b> a page has been loaded but <b>before</b> the crawler
     /// trawls the page for links.
     /// </summary>
     public event EventHandler<IPage> Loaded;
+
+    ICrawlQueue queue;
 
     /// <summary>
     /// Raised every time a valid URL is discovered. If the same URL is
@@ -174,9 +225,12 @@ namespace Qualweb {
     /// </summary>
     public event EventHandler<string> UrlDiscovered;
 
-    protected Crawler() {}
+    protected Crawler() {
+    }
 
     public Task<ISet<string>> crawl(string baseUrl, CrawlOptions crawlOptions) {
+      this.queue = new MemoryQueue(crawlOptions.maxParallelCrawls);
+
       return this.recursiveCrawl(new HashSet<string>() { baseUrl }, crawlOptions);
     }
 
@@ -191,17 +245,10 @@ namespace Qualweb {
     protected async Task<ISet<string>> recursiveCrawl(ISet<string> urls, CrawlOptions crawlOptions, int currentLinkDepth = 0) {
       Console.WriteLine($"Crawl: {urls.First()} ({urls.Count()}) (currentDepth: {currentLinkDepth})");
 
-      if (crawlOptions.maxLinkDepth == null)
-        crawlOptions.maxLinkDepth = int.MaxValue;
-      if (crawlOptions.maxUrls == null)
-        crawlOptions.maxUrls = int.MaxValue;
-
       // End recursion.
       if (currentLinkDepth > crawlOptions.maxLinkDepth ||
           urls.Count() >= crawlOptions.maxUrls
       ) return urls;
-
-      Console.WriteLine("Recursing");
 
       var runningTasks = urls.Select(async url => await this.fetchPageLinks(url))
         .Select(async found => this.recursiveCrawl(await found, crawlOptions, currentLinkDepth + 1));
@@ -239,7 +286,7 @@ namespace Qualweb {
 
       var linkElements = await page.QuerySelectorAllAsync("body a");
 
-      var invalidLinkStarts = new List<string>() { "http", "#" };
+      var validLinkStarts = new List<string>() { "http", "#" };
       var invalidLinkContents = new List<string>() { "javascript:", "mailto:", "tel:" };
       var invalidFileExts = new List<string>() {
         "png",
@@ -265,16 +312,17 @@ namespace Qualweb {
       foreach (var link in linkElements) {
         var href = await link.GetAttributeAsync("href");
 
-        if (href != null)
-          Console.WriteLine($"Validating {href}");
-
         // If there is no href, if it has an uninteresting file extension, or
         // if it contains suggestions that it contains javascript or mail
         // links, ignore it.
-        if (href == null ||
+        if (href == null) continue;
+        else if (this.queue.Has(href)) continue;
+        else if (
           invalidFileExts.Any(end => href.EndsWith(end)) ||
-          invalidLinkContents.Any(content => href.Contains(content))
+          invalidLinkContents.Any(content => href.Contains(content)) ||
+          href.StartsWith("#")
         ) {
+          this.queue.Add(href, QueueState.InvalidDomain);
           continue;
         } else if (href.StartsWith("/")) {
           // Absolute path. Concatenate with the base.
@@ -295,6 +343,8 @@ namespace Qualweb {
           Console.WriteLine($"Unknown/unsupported URL { href }.");
         }
       }
+
+      await page.CloseAsync(new PageCloseOptions { RunBeforeUnload = false });
 
       return pathsToTest;
     }
