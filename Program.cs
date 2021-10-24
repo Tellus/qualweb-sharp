@@ -1,6 +1,7 @@
 ﻿using System;
 using System.CommandLine;
 using System.CommandLine.Invocation;
+using System.Linq;
 using Microsoft.Playwright;
 using System.Threading.Tasks;
 
@@ -45,28 +46,33 @@ namespace Qualweb
           "--max-path-depth",
           "The crawler will not crawl pages that have this many segments in the URL's path. See also --max-link-depth."
         ),
+        new Option<int>(
+          "--max-parallel",
+          "How many parallel tasks to use while crawling."
+        )
       };
 
-      crawlCommand.Handler = CommandHandler.Create<string, int, int>(RunCrawler);
+      crawlCommand.Handler = CommandHandler.Create<string, int, int, int>(RunCrawler);
 
       return new RootCommand("Qualweb is a web accessibility evaluation tool. This version is written in C#.") {
         crawlCommand,
       };
     }
 
-    static async Task RunCrawler(string baseUrl, int maxLinkDepth = 1, int maxPathDepth = 1) {
+    static async Task RunCrawler(string baseUrl, int maxLinkDepth = 1, int maxPathDepth = 1, int maxParallel = 1) {
       Console.WriteLine($"Running Crawler from {baseUrl}. Path depth: { maxPathDepth }, link depth: { maxLinkDepth }.");
 
       var crawler = await Crawler.createCrawlerAsync();
 
       var links = await crawler.crawl(baseUrl, new CrawlOptions {
-        maxLinkDepth = 2,
+        maxLinkDepth = maxLinkDepth,
+        maxParallelCrawls = maxParallel,
       });
 
       Console.WriteLine("Crawler discovered the following links:");
 
-      foreach (var l in links)
-        Console.WriteLine($"\t{l}");
+      foreach (var l in links.Where(l => l.State == QueueState.Downloaded))
+        Console.WriteLine($"\t{l.url}");
     }
   }
 }
