@@ -132,11 +132,22 @@ namespace Qualweb {
     bool HasNext();
 
     /// <summary>
+    /// Checks whether the queue currently has any items awaiting processing or
+    /// are currently being processed.
+    /// </summary>
+    /// <returns>True if at least one item is Queued or Running.</returns>
+    bool HasNextOrRunning();
+
+    /// <summary>
     /// Retrieves the next <see cref="QueueItem"/> that is queued up. Throws
     /// an error if no queued items remain.
     /// </summary>
     /// <returns></returns>
     QueueItem<string> GetNext();
+
+    void MarkDownloaded(string url);
+
+    IEnumerable<QueueItem<string>> GetAll();
   }
 
   /// <summary>
@@ -176,17 +187,30 @@ namespace Qualweb {
     }
 
     public void Add(string url, QueueState state = QueueState.Queued) {
-      if (this.Has(url)) {
-        throw new Exception($"The URL ${url} is already present in the queue");
-      } else this.queue.TryAdd(url, new QueueItem<string>() {
+      this.queue.TryAdd(url, new QueueItem<string>() {
         Data = url,
-        State = QueueState.Queued,
+        State = state,
         url = url,
       });
     }
 
+    public void MarkDownloaded(string url) {
+      this.queue.AddOrUpdate(
+        url,
+        u => throw new Exception("Should not happen!"),
+        (u, queueItem) => {
+          queueItem.State = QueueState.Downloaded;
+          return queueItem;
+        }
+      );
+    }
+
     public bool HasNext() {
       return this.queue.Any(item => item.Value.State == QueueState.Queued);
+    }
+
+    public bool HasNextOrRunning() {
+      return this.queue.Any(item => item.Value.State == QueueState.Queued || item.Value.State == QueueState.Running);
     }
 
     public QueueItem<string> GetNext() {
@@ -195,6 +219,10 @@ namespace Qualweb {
       nextItem.Value.State = QueueState.Pending;
 
       return nextItem.Value;
+    }
+
+    public IEnumerable<QueueItem<string>> GetAll() {
+      return this.queue.Values;
     }
   }
 
@@ -228,52 +256,47 @@ namespace Qualweb {
     protected Crawler() {
     }
 
-    public Task<ISet<string>> crawl(string baseUrl, CrawlOptions crawlOptions) {
+    public async Task<IEnumerable<QueueItem<string>>> crawl(string baseUrl, CrawlOptions crawlOptions) {
       this.queue = new MemoryQueue(crawlOptions.maxParallelCrawls);
 
-      return this.recursiveCrawl(new HashSet<string>() { baseUrl }, crawlOptions);
-    }
+      this.queue.Add(baseUrl);
 
-    /// <summary>
-    /// Internal crawl method. Recursively calls itself until it reaches one of
-    /// its crawl caps or can no longer find any URLs.
-    /// </summary>
-    /// <param name="urls">Current set of known URLs</param>
-    /// <param name="crawlOptions"></param>
-    /// <param name="currentLinkDepth"></param>
-    /// <returns></returns>
-    protected async Task<ISet<string>> recursiveCrawl(ISet<string> urls, CrawlOptions crawlOptions, int currentLinkDepth = 0) {
-      Console.WriteLine($"Crawl: {urls.First()} ({urls.Count()}) (currentDepth: {currentLinkDepth})");
+      // Initial URL is always handled individually before we try to add
+      // parallel handling.
+      await this.fetchPageLinks(baseUrl);
 
-      // End recursion.
-      if (currentLinkDepth > crawlOptions.maxLinkDepth ||
-          urls.Count() >= crawlOptions.maxUrls
-      ) return urls;
+      List<Task> taskList = new List<Task>(crawlOptions.maxParallelCrawls);
 
-      var runningTasks = urls.Select(async url => await this.fetchPageLinks(url))
-        .Select(async found => this.recursiveCrawl(await found, crawlOptions, currentLinkDepth + 1));
+      for (int i = 0; i < crawlOptions.maxParallelCrawls; i++) {
+        var localThreadId = i;
+        taskList.Add(Task.Run(async () => {
+          while (this.queue.HasNextOrRunning()) {
+            var next = this.queue.GetNext();
 
-      var finishedTasks = await Task.WhenAll(await Task.WhenAll(runningTasks));
+            if (next != null) {
+              Console.WriteLine($"Thread #{localThreadId}: {next.url}");
+              await this.fetchPageLinks(next.url);
+            }
+          }
+        }));
+      }
 
-      return finishedTasks.SelectMany(nr => nr).ToHashSet();
+      await Task.WhenAll(taskList);
+
+      return this.queue.GetAll();
     }
 
     /// <summary>Navigates to <paramref name="url"/>, discovers its links, and recursively
     /// trawls each of them until the max link depth has been reached, or no
     /// new links have been discovered. </summary>
     /// <param name="url">The URL to navigate to and trawl.</param>
-    protected async Task<ISet<string>> fetchPageLinks(string url) {
+    protected async Task fetchPageLinks(string url) {
       Console.WriteLine($"Fetching links for {url}");
-
-      var foundUrls = new List<string>();
 
       Uri uri = new Uri(url);
 
-      // Using a Set guarantees that trivially identical URLs aren't duplicated.
-      var pathsToTest = new HashSet<string>();
-
       var page = await this.browser.NewPageAsync(new BrowserNewPageOptions {
-
+        
       });
 
       // TODO: viewport change.
@@ -284,7 +307,16 @@ namespace Qualweb {
 
       this.Loaded?.Invoke(this, page);
 
-      var linkElements = await page.QuerySelectorAllAsync("body a");
+      // Get all link elements in the DOM, then request their href attribute.
+      var linkElements = (await page.QuerySelectorAllAsync("body a"))
+        .Select(el => el.GetAttributeAsync("href"));
+
+      // Wait for alll of these tasks to complete.
+      await Task.WhenAll(linkElements);
+
+      // Select the result (the href) and only keep the ones that aren't null.
+      var hrefs = linkElements.Where(tsk => tsk.Result != null)
+                              .Select(tsk => tsk.Result);
 
       var validLinkStarts = new List<string>() { "http", "#" };
       var invalidLinkContents = new List<string>() { "javascript:", "mailto:", "tel:" };
@@ -309,27 +341,25 @@ namespace Qualweb {
         "txt",
       };
 
-      foreach (var link in linkElements) {
-        var href = await link.GetAttributeAsync("href");
-
+      foreach (var href in hrefs) {
         // If there is no href, if it has an uninteresting file extension, or
         // if it contains suggestions that it contains javascript or mail
         // links, ignore it.
-        if (href == null) continue;
-        else if (this.queue.Has(href)) continue;
+        if (href == null) {
+          Console.WriteLine("ERROR! Null href was passed! This should not happen!");
+        } else if (this.queue.Has(href)) continue;
         else if (
           invalidFileExts.Any(end => href.EndsWith(end)) ||
           invalidLinkContents.Any(content => href.Contains(content)) ||
           href.StartsWith("#")
         ) {
           this.queue.Add(href, QueueState.InvalidDomain);
-          continue;
         } else if (href.StartsWith("/")) {
           // Absolute path. Concatenate with the base.
-          pathsToTest.Add(new Uri(uri, href).AbsoluteUri);
+          this.queue.Add(new Uri(uri, href).AbsoluteUri);
         } else if (href.StartsWith("./")) {
           // Weird relative path. Chop off the period and append to the base.
-          pathsToTest.Add(new Uri(uri, href.Substring(1)).AbsoluteUri);
+          this.queue.Add(new Uri(uri, href.Substring(1)).AbsoluteUri);
         } else if (href.StartsWith("http")) {
           // Full URL. Make sure it's a whitelisted domain (i.e. the same
           // domain)
@@ -337,16 +367,16 @@ namespace Qualweb {
           // TODO: Add custom whitelisting here!
           var linkedUri = new Uri(href);
           if (linkedUri.Host == uri.Host) {
-            pathsToTest.Add(linkedUri.OriginalString);
+            this.queue.Add(linkedUri.OriginalString);
           }
         } else {
           Console.WriteLine($"Unknown/unsupported URL { href }.");
         }
       }
 
-      await page.CloseAsync(new PageCloseOptions { RunBeforeUnload = false });
+      this.queue.MarkDownloaded(url);
 
-      return pathsToTest;
+      await page.CloseAsync(new PageCloseOptions { RunBeforeUnload = false });      
     }
 
     public static async Task<Crawler> createCrawlerAsync() {
@@ -354,7 +384,9 @@ namespace Qualweb {
       var playwright = await Playwright.CreateAsync();
 
       var crawler = new Crawler() {
-        browser = await playwright.Chromium.LaunchAsync()
+        browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions {
+          // Headless = false
+        })
       };
 
       return crawler;
