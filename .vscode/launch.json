@@ -13,6 +13,8 @@
       "program": "${workspaceFolder}/bin/Debug/net5.0/qualweb-sharp.dll",
       "args": [
         "crawl",
+        "--max-parallel",
+        "3",
         "https://www.inklusio.dk"
       ],
       "cwd": "${workspaceFolder}",
