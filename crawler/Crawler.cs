@@ -4,6 +4,7 @@ using System.Threading.Tasks;
 using System.Linq;
 using System.Collections.Generic;
 using System.Collections.Concurrent;
+using Inqlude;
 
 namespace Qualweb {
   public record CrawlOptions {
@@ -49,44 +50,6 @@ namespace Qualweb {
   /// <summary>
   /// Valid states for an item in the queue.
   /// </summary>
-  public enum QueueState {
-    /// <summary>
-    /// Inert initial state. Items given this state are intentionally left out
-    /// of the crawler's workflow until they enter the <see cref="Queued"/>
-    /// state.
-    /// </summary>
-    Created,
-    
-    /// <summary>
-    /// The item is awaiting processing by the crawler.
-    /// </summary>
-    Queued,
-
-    /// <summary>
-    /// The item has been picked up by a crawler and is about to be processed.
-    /// </summary>
-    Pending,
-
-    /// <summary>
-    /// The item is currently being processed by a crawler.
-    /// </summary>
-    Running,
-
-    /// <summary>
-    /// The crawler failed to process the item.
-    /// </summary>
-    Failed,
-
-    /// <summary>
-    /// The crawler has completed processing the item and it was a valid item.
-    /// </summary>
-    Downloaded,
-
-    /// <summary>
-    /// The item's URL pointed to a domain that was not in the whitelist.
-    /// </summary>
-    InvalidDomain,
-  }
 
   public class QueueItem<T> {
     public T Data;
@@ -199,7 +162,7 @@ namespace Qualweb {
         url,
         u => throw new Exception("Should not happen!"),
         (u, queueItem) => {
-          queueItem.State = QueueState.Downloaded;
+          queueItem.State = QueueState.EvaluationTaskSpawned;
           return queueItem;
         }
       );
@@ -210,13 +173,13 @@ namespace Qualweb {
     }
 
     public bool HasNextOrRunning() {
-      return this.queue.Any(item => item.Value.State == QueueState.Queued || item.Value.State == QueueState.Running);
+      return this.queue.Any(item => item.Value.State == QueueState.Queued || item.Value.State == QueueState.Headers || item.Value.State == QueueState.Spooled);
     }
 
     public QueueItem<string> GetNext() {
       var nextItem = this.queue.First(item => item.Value.State == QueueState.Queued);
 
-      nextItem.Value.State = QueueState.Pending;
+      nextItem.Value.State = QueueState.Spooled;
 
       return nextItem.Value;
     }

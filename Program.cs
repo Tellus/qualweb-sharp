@@ -4,8 +4,11 @@ using System.CommandLine.Invocation;
 using System.Linq;
 using Microsoft.Playwright;
 using System.Threading.Tasks;
+using MongoDB.Bson;
+using MongoDB.Driver;
+using Qualweb;
 
-namespace Qualweb
+namespace Inqlude
 {
   class Program
   {
@@ -54,8 +57,14 @@ namespace Qualweb
 
       crawlCommand.Handler = CommandHandler.Create<string, int, int, int>(RunCrawler);
 
+      var dbCommand = new Command("db", "Messes around with the database") {
+        Handler = CommandHandler.Create(RunDatabase),
+      };
+
+
       return new RootCommand("Qualweb is a web accessibility evaluation tool. This version is written in C#.") {
         crawlCommand,
+        dbCommand,
       };
     }
 
@@ -71,8 +80,37 @@ namespace Qualweb
 
       Console.WriteLine("Crawler discovered the following links:");
 
-      foreach (var l in links.Where(l => l.State == QueueState.Downloaded))
+      foreach (var l in links.Where(l => l.State == QueueState.EvaluationTaskSpawned))
         Console.WriteLine($"\t{l.url}");
+    }
+
+    static async Task RunDatabase() {
+      Console.WriteLine("Getting next queued item");
+
+      // var next = await CrawlerHandler.GetAndMarkNext();
+
+      // Console.WriteLine($"{next.Id}: {next.Url}");
+
+      // Console.WriteLine("Connecting to database.");
+
+      // var client = new Inqlude.Connection();
+
+      // var dbNames = await client.client.ListDatabaseNamesAsync();
+
+      // dbNames.MoveNext();
+      // foreach (var name in dbNames.Current) {
+      //   Console.WriteLine(name);
+      // }
+
+      // Console.WriteLine("Wooohooo?");
+
+      // var collection = client.client.GetDatabase("smEvaluations").GetCollection<EvaluationTask>("evaluationtasks");
+
+      // var builder = new FilterDefinitionBuilder<EvaluationTask>();
+
+      // var evalTask = collection.Find(builder.Regex("crawlUrl", new BsonRegularExpression("/minds\\.dk/"))).First();
+
+      // Console.WriteLine($"{evalTask._id}: {evalTask.CrawlUrl}");
     }
   }
 }
