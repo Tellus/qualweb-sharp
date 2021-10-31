@@ -7,13 +7,56 @@ using System.Threading.Tasks;
 using MongoDB.Bson;
 using MongoDB.Driver;
 using Qualweb;
+using NLog;
+using NLog.Extensions.Logging;
 
-namespace Inqlude
+namespace Inqlude.Database
 {
   class Program
   {
+    static Logger logger {
+      get => LogManager.GetCurrentClassLogger();
+    }
+
     public static async Task Main(params string[] args) {
       var cmd = BuildCommand();
+
+      // var loggerConfiguration = new NLog.Config.LoggingConfiguration();
+
+      // var logToFile = new NLog.Targets.FileTarget("logfile") {
+      //   FileName = System.IO.Path.Join("log", "example.log"),
+      // };
+
+      // var logToConsole = new NLog.Targets.ConsoleTarget("logconsole");
+
+      // loggerConfiguration.AddRule(LogLevel.Trace, LogLevel.Fatal, logToFile);
+      // loggerConfiguration.AddRule(LogLevel.Trace, LogLevel.Fatal, logToConsole);
+
+      // LogManager.Configuration = loggerConfiguration;
+
+      var defaultInternalLogLevel = NLog.Common.InternalLogger.LogLevel;
+      NLog.Common.InternalLogger.LogToConsole = true;
+      NLog.Common.InternalLogger.LogLevel = LogLevel.Error;
+
+      EventHandler<NLog.Common.InternalLoggerMessageEventArgs> configLoadEventHandler = (object source, NLog.Common.InternalLoggerMessageEventArgs args) => {
+        if (args.Level == LogLevel.Error) {
+          Console.WriteLine("Something bad happened while parsing the logging config file. Program will now exit.");
+          System.Diagnostics.Process.GetCurrentProcess().Kill(true);
+        }
+      };
+
+      NLog.Common.InternalLogger.LogMessageReceived += configLoadEventHandler;
+
+      LogManager.LoadConfiguration("nlog.config");
+
+      // If we reach this code, no error happened while loading the config.
+      // Remove the event handler again.
+      NLog.Common.InternalLogger.LogMessageReceived += configLoadEventHandler;
+
+      NLog.Common.InternalLogger.LogToConsole = false;
+      NLog.Common.InternalLogger.LogLevel = defaultInternalLogLevel;
+
+      logger.Debug("NLog loaded. Continuing with command invocation.");
 
       await cmd.InvokeAsync(args);
 
@@ -61,7 +104,6 @@ namespace Inqlude
         Handler = CommandHandler.Create(RunDatabase),
       };
 
-
       return new RootCommand("Qualweb is a web accessibility evaluation tool. This version is written in C#.") {
         crawlCommand,
         dbCommand,
@@ -69,7 +111,7 @@ namespace Inqlude
     }
 
     static async Task RunCrawler(string baseUrl, int maxLinkDepth = 1, int maxPathDepth = 1, int maxParallel = 1) {
-      Console.WriteLine($"Running Crawler from {baseUrl}. Path depth: { maxPathDepth }, link depth: { maxLinkDepth }.");
+      logger.Info($"Running Crawler from {baseUrl}. Path depth: { maxPathDepth }, link depth: { maxLinkDepth }.");
 
       var crawler = await Crawler.createCrawlerAsync();
 
@@ -78,14 +120,14 @@ namespace Inqlude
         maxParallelCrawls = maxParallel,
       });
 
-      Console.WriteLine("Crawler discovered the following links:");
+      logger.Info("Crawler discovered the following links:");
 
       foreach (var l in links.Where(l => l.State == QueueState.EvaluationTaskSpawned))
-        Console.WriteLine($"\t{l.url}");
+        logger.Info($"\t{l.url}");
     }
 
     static async Task RunDatabase() {
-      Console.WriteLine("Getting next queued item");
+      logger.Info("Getting next queued item");
 
       // var next = await CrawlerHandler.GetAndMarkNext();
 

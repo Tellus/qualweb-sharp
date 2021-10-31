@@ -9,7 +9,9 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.Playwright" Version="1.16.0" />
     <PackageReference Include="MongoDB.Driver" Version="2.13.2" />
+    <PackageReference Include="NLog.Extensions.Logging" Version="1.7.4" />
     <PackageReference Include="System.CommandLine" Version="2.0.0-beta1.21308.1" />
+    <None Update="nlog.config" CopyToOutputDirectory="Always" />
   </ItemGroup>
 
 </Project>

@@ -1,6 +1,6 @@
 using System;
 
-namespace Inqlude {
+namespace Inqlude.Database {
   public static class CrawlTaskRepository {
     static CrawlTaskRepository() {
       Console.WriteLine($"{nameof(CrawlTaskRepository)} instantiated.");

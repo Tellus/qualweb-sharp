@@ -4,7 +4,7 @@ using System.Threading.Tasks;
 using System.Linq;
 using System.Collections.Generic;
 using System.Collections.Concurrent;
-using Inqlude;
+using Inqlude.Database;
 
 namespace Qualweb {
   public record CrawlOptions {
@@ -195,6 +195,8 @@ namespace Qualweb {
   /// itself does <b>not</b> log any other data, such as serializing the DOM.
   /// </summary>
   public class Crawler {
+    protected static readonly NLog.Logger logger = NLog.LogManager.GetCurrentClassLogger();
+
     /// <summary>
     /// Browser instance used for crawling.
     /// </summary>
@@ -216,10 +218,11 @@ namespace Qualweb {
     /// </summary>
     public event EventHandler<string> UrlDiscovered;
 
-    protected Crawler() {
-    }
+    protected Crawler() {}
 
     public async Task<IEnumerable<QueueItem<string>>> crawl(string baseUrl, CrawlOptions crawlOptions) {
+      logger.Info($"Spinning up crawler for \"{baseUrl}\"");
+
       this.queue = new MemoryQueue(crawlOptions.maxParallelCrawls);
 
       this.queue.Add(baseUrl);
@@ -237,7 +240,7 @@ namespace Qualweb {
             var next = this.queue.GetNext();
 
             if (next != null) {
-              Console.WriteLine($"Thread #{localThreadId}: {next.url}");
+              logger.Info($"Thread #{localThreadId}: {next.url}");
               await this.fetchPageLinks(next.url);
             }
           }
@@ -254,7 +257,7 @@ namespace Qualweb {
     /// new links have been discovered. </summary>
     /// <param name="url">The URL to navigate to and trawl.</param>
     protected async Task fetchPageLinks(string url) {
-      Console.WriteLine($"Fetching links for {url}");
+      logger.Info($"Fetching links for {url}");
 
       Uri uri = new Uri(url);
 
@@ -309,7 +312,7 @@ namespace Qualweb {
         // if it contains suggestions that it contains javascript or mail
         // links, ignore it.
         if (href == null) {
-          Console.WriteLine("ERROR! Null href was passed! This should not happen!");
+          logger.Info("ERROR! Null href was passed! This should not happen!");
         } else if (this.queue.Has(href)) continue;
         else if (
           invalidFileExts.Any(end => href.EndsWith(end)) ||
@@ -333,7 +336,7 @@ namespace Qualweb {
             this.queue.Add(linkedUri.OriginalString);
           }
         } else {
-          Console.WriteLine($"Unknown/unsupported URL { href }.");
+          logger.Info($"Unknown/unsupported URL { href }.");
         }
       }
 

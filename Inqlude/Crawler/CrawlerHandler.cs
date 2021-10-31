@@ -3,7 +3,7 @@ using MongoDB.Bson;
 using System.Threading.Tasks;
 using System;
 
-namespace Inqlude {
+namespace Inqlude.Database {
   public class CrawlerHandler {
 
     private static FilterDefinitionBuilder<CrawlQueueItem> filterBuilder = new FilterDefinitionBuilder<CrawlQueueItem>();

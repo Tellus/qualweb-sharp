@@ -2,7 +2,7 @@ using System;
 using MongoDB.Bson;
 using MongoDB.Bson.Serialization.Attributes;
 
-namespace Inqlude {
+namespace Inqlude.Database {
   public enum QueueState {
     /// <summary>
     /// Newly-created, but NOT ready to be picked up by the Crawler yet. Use
